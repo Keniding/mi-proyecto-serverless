@@ -2,47 +2,71 @@ service: mi-proyecto-serverless
 
 frameworkVersion: '4'
 
+plugins:
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 5000
+    lambdaPort: 5002
+    websocketPort: 5001
+    noPrependStageInUrl: true
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: true
+    exclude: ['typeorm', 'mysql2']
+    target: 'node22'
+    platform: 'node'
+    format: 'cjs'  # Importante: usar CommonJS en lugar de ESM
+    define:
+      'process.env.NODE_ENV': "'${env:NODE_ENV, 'development'}'"
+    banner:
+      js: "const require = (await import('node:module')).createRequire(import.meta.url);"
+
 provider:
   name: aws
   runtime: nodejs22.x
   region: us-east-1
   environment:
     DB_HOST: ${env:DB_HOST, "localhost"}
+    DB_PORT: ${env:DB_PORT, "3306"}
     DB_USER: ${env:DB_USER, "root"}
     DB_PASSWORD: ${env:DB_PASSWORD, ""}
-    DB_NAME: ${env:DB_NAME, "mi_base_de_datos"}
-
-plugins:
-  - serverless-offline
+    DB_NAME: ${env:DB_NAME, "items_db"}
+    NODE_ENV: ${env:NODE_ENV, "development"}
+    JWT_SECRET: ${env:JWT_SECRET, "your-secret-key"}
+    CORS_ORIGIN: ${env:CORS_ORIGIN, "*"}
+    PORT: ${env:PORT, "3000"}
 
 functions:
   createItem:
     handler: src/functions/create.handler
     events:
-      - http:
-          path: items
-          method: post
+      - httpApi:
+          path: /items
+          method: POST
   getAllItems:
     handler: src/functions/read.getAll
     events:
-      - http:
-          path: items
-          method: get
+      - httpApi:
+          path: /items
+          method: GET
   getItemById:
     handler: src/functions/read.getById
     events:
-      - http:
-          path: items/{id}
-          method: get
+      - httpApi:
+          path: /items/{id}
+          method: GET
   updateItem:
     handler: src/functions/update.handler
     events:
-      - http:
-          path: items/{id}
-          method: put
+      - httpApi:
+          path: /items/{id}
+          method: PUT
   deleteItem:
     handler: src/functions/delete.handler
     events:
-      - http:
-          path: items/{id}
-          method: delete
+      - httpApi:
+          path: /items/{id}
+          method: DELETE

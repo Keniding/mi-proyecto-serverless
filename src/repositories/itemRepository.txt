@@ -1,0 +1,169 @@
+import {Pool, RowDataPacket, ResultSetHeader, PoolConnection} from 'mysql2/promise';
+import { Item } from '../models/item';
+import { DatabaseError, NotFoundError } from '../utils/errors';
+import { logger } from '../utils/logger';
+
+export interface ItemRepository {
+	create(item: Item): Promise<number>;
+	findAll(): Promise<Item[]>;
+	findById(id: number): Promise<Item>;
+	update(id: number, item: Partial<Item>): Promise<number>;
+	delete(id: number): Promise<number>;
+	findAllPaginated(page: number, limit: number): Promise<{ items: Item[]; total: number }>;
+}
+
+export class MySQLItemRepository implements ItemRepository {
+	constructor(private pool: Pool) {}
+
+	async create(item: Item): Promise<number> {
+		try {
+			const connection = await this.pool.getConnection();
+			try {
+				const [result] = await connection.query<ResultSetHeader>(
+					"INSERT INTO items (nombre, descripcion) VALUES (?, ?)",
+					[item.nombre, item.descripcion]
+				);
+
+				return result.insertId;
+			} finally {
+				connection.release();
+			}
+		} catch (error) {
+			logger.error('Error en repositorio al crear item:', error);
+			throw new DatabaseError('Error al crear item en la base de datos');
+		}
+	}
+
+	async findAll(): Promise<Item[]> {
+		try {
+			const connection = await this.pool.getConnection();
+			try {
+				const [rows] = await connection.query<RowDataPacket[]>("SELECT * FROM items");
+				return rows as Item[];
+			} finally {
+				connection.release();
+			}
+		} catch (error) {
+			logger.error('Error en repositorio al obtener items:', error);
+			throw new DatabaseError('Error al consultar items en la base de datos');
+		}
+	}
+
+	async findAllPaginated(page: number, limit: number): Promise<{ items: Item[]; total: number }> {
+		let connection: PoolConnection | null = null;
+
+		try {
+			connection = await this.pool.getConnection();
+
+			const offset = (page - 1) * limit;
+
+			const [rows] = await connection.query(
+				'SELECT * FROM items ORDER BY createdAt DESC LIMIT ? OFFSET ?',
+				[limit, offset]
+			);
+
+			const [countResult] = await connection.query('SELECT COUNT(*) as total FROM items');
+			const total = (countResult as any[])[0].total;
+
+			return {
+				items: rows as Item[],
+				total
+			};
+		} catch (error) {
+			logger.error('Error al obtener items paginados de la base de datos:', error);
+			throw new DatabaseError('Error al obtener items paginados de la base de datos');
+		} finally {
+			if (connection) connection.release();
+		}
+	}
+
+	async findById(id: number): Promise<Item> {
+		try {
+			const connection = await this.pool.getConnection();
+			try {
+				const [rows] = await connection.query<RowDataPacket[]>(
+					"SELECT * FROM items WHERE id = ?",
+					[id]
+				);
+
+				if (rows.length === 0) {
+					throw new NotFoundError(`No se encontró ningún item con ID: ${id}`);
+				}
+
+				return rows[0] as Item;
+			} finally {
+				connection.release();
+			}
+		} catch (error) {
+			if (error instanceof NotFoundError) {
+				throw error;
+			}
+			logger.error(`Error en repositorio al obtener item con ID ${id}:`, error);
+			throw new DatabaseError('Error al consultar item en la base de datos');
+		}
+	}
+
+	async update(id: number, item: Partial<Item>): Promise<number> {
+		try {
+			const connection = await this.pool.getConnection();
+			try {
+				await this.findById(id);
+
+				const updateFields: string[] = [];
+				const values: any[] = [];
+
+				if (item.nombre !== undefined) {
+					updateFields.push("nombre = ?");
+					values.push(item.nombre);
+				}
+
+				if (item.descripcion !== undefined) {
+					updateFields.push("descripcion = ?");
+					values.push(item.descripcion);
+				}
+
+				updateFields.push("updatedAt = NOW()");
+				values.push(id);
+
+				const [result] = await connection.query<ResultSetHeader>(
+					`UPDATE items SET ${updateFields.join(", ")} WHERE id = ?`,
+					values
+				);
+
+				return result.affectedRows;
+			} finally {
+				connection.release();
+			}
+		} catch (error) {
+			if (error instanceof NotFoundError) {
+				throw error;
+			}
+			logger.error(`Error en repositorio al actualizar item con ID ${id}:`, error);
+			throw new DatabaseError('Error al actualizar item en la base de datos');
+		}
+	}
+
+	async delete(id: number): Promise<number> {
+		try {
+			const connection = await this.pool.getConnection();
+			try {
+				await this.findById(id);
+
+				const [result] = await connection.query<ResultSetHeader>(
+					"DELETE FROM items WHERE id = ?",
+					[id]
+				);
+
+				return result.affectedRows;
+			} finally {
+				connection.release();
+			}
+		} catch (error) {
+			if (error instanceof NotFoundError) {
+				throw error;
+			}
+			logger.error(`Error en repositorio al eliminar item con ID ${id}:`, error);
+			throw new DatabaseError('Error al eliminar item en la base de datos');
+		}
+	}
+}

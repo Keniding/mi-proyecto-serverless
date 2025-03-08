@@ -1,0 +1,55 @@
+import { APIGatewayProxyHandler } from "aws-lambda";
+import middy from '@middy/core';
+import httpJsonBodyParser from '@middy/http-json-body-parser';
+import httpErrorHandler from '@middy/http-error-handler';
+import cors from '@middy/http-cors';
+import { ItemService } from "../services/itemService";
+import { MySQLItemRepository } from "../repositories/itemRepository";
+import pool from "../libs/db";
+import { created, badRequest, serverError, tooManyRequests } from "../libs/apiResponses";
+import { ValidationError, DatabaseError } from "../utils/errors";
+import { logger } from "../utils/logger";
+import { InMemoryRateLimit } from '../middleware/rateLimiter';
+
+const repository = new MySQLItemRepository(pool);
+const service = new ItemService(repository);
+
+const rateLimiter = new InMemoryRateLimit({
+	windowMs: 60 * 1000, // 1 minuto
+	max: 10 // 10 solicitudes por minuto
+});
+
+const baseHandler: APIGatewayProxyHandler = async (event) => {
+	try {
+		try {
+			await rateLimiter.check(event);
+		} catch (error: any) {
+			return tooManyRequests(error.message);
+		}
+
+		const result = await service.createItem(event.body);
+
+		return created({
+			id: result.id,
+			...result.item,
+			message: "Item creado exitosamente"
+		});
+	} catch (error) {
+		logger.error('Error en handler de creación de item:', error);
+
+		if (error instanceof ValidationError) {
+			return badRequest(error.message);
+		}
+
+		if (error instanceof DatabaseError) {
+			return serverError(error.message);
+		}
+
+		return serverError("Error al procesar la solicitud");
+	}
+};
+
+export const handler = middy(baseHandler)
+	.use(httpJsonBodyParser())
+	.use(cors())
+	.use(httpErrorHandler());

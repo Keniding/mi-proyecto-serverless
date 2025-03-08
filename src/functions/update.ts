@@ -1,75 +1,91 @@
 import { APIGatewayProxyHandler } from "aws-lambda";
-import pool from "../libs/db";
-import { Item } from "../models/item";
-import { success, badRequest, notFound, serverError } from "../libs/apiResponses";
+import middy from '@middy/core';
+import httpJsonBodyParser from '@middy/http-json-body-parser';
+import httpErrorHandler from '@middy/http-error-handler';
+import cors from '@middy/http-cors';
+import { ItemService } from "../services/itemService";
+import { TypeORMItemRepository } from "../repositories/itemRepository";
+import { success, badRequest, notFound, serverError, tooManyRequests } from "../libs/apiResponses";
+import { ValidationError, NotFoundError, DatabaseError } from "../utils/errors";
+import { logger } from "../utils/logger";
+import { InMemoryRateLimit } from '../middleware/rateLimiter';
+import { validateUpdateItem } from "../validators/itemValidator";
+import { bootstrap } from "../bootstrap";
 
-export const handler: APIGatewayProxyHandler = async (event) => {
+let repository: TypeORMItemRepository;
+let service: ItemService;
+
+const initializeServices = async () => {
+	if (!repository) {
+		const dataSource = await bootstrap();
+		repository = new TypeORMItemRepository(dataSource);
+		service = new ItemService(repository);
+	}
+};
+
+const rateLimiter = new InMemoryRateLimit({
+	windowMs: 60 * 1000,
+	max: 10
+});
+
+const baseHandler: APIGatewayProxyHandler = async (event) => {
 	try {
-		const id = event.pathParameters?.id;
+		try {
+			await rateLimiter.check(event);
+		} catch (error: any) {
+			return tooManyRequests(error.message);
+		}
 
-		if (!id) {
-			return badRequest("ID no proporcionado");
+		await initializeServices();
+
+		const id = event.pathParameters?.id;
+		if (!id || isNaN(Number(id))) {
+			return badRequest("ID no válido o no proporcionado");
 		}
 
 		if (!event.body) {
 			return badRequest("No se proporcionó un cuerpo en la solicitud");
 		}
 
-		const itemUpdate: Partial<Item> = JSON.parse(event.body);
-
-		if (!itemUpdate.nombre && !itemUpdate.descripcion) {
-			return badRequest("Se debe proporcionar al menos un campo para actualizar");
-		}
-
-		const connection = await pool.getConnection();
-
 		try {
-			const [existingItems] = await connection.query(
-				"SELECT * FROM items WHERE id = ?",
-				[id]
-			);
+			const itemUpdate = validateUpdateItem(event.body);
 
-			const items = existingItems as any[];
+			const result = await service.updateItem(Number(id), itemUpdate);
 
-			if (items.length === 0) {
-				return notFound(`No se encontró ningún item con ID: ${id}`);
-			}
-
-			const updateFields: string[] = [];
-			const values: any[] = [];
-
-			if (itemUpdate.nombre) {
-				updateFields.push("nombre = ?");
-				values.push(itemUpdate.nombre);
-			}
-
-			if (itemUpdate.descripcion) {
-				updateFields.push("descripcion = ?");
-				values.push(itemUpdate.descripcion);
-			}
-
-			updateFields.push("updatedAt = NOW()");
-
-			values.push(id);
-
-			const [result] = await connection.query(
-				`UPDATE items SET ${updateFields.join(", ")} WHERE id = ?`,
-				values
-			);
-
-			const affectedRows = (result as any).affectedRows;
+			logger.info(`Item actualizado exitosamente`, {
+				itemId: id,
+				fields: Object.keys(itemUpdate)
+			});
 
 			return success({
-				id,
+				id: Number(id),
 				...itemUpdate,
-				affectedRows,
+				affectedRows: result.affectedRows,
 				message: "Item actualizado exitosamente"
 			});
-		} finally {
-			connection.release();
+		} catch (error) {
+			if (error instanceof ValidationError) {
+				return badRequest(error.message);
+			}
+
+			if (error instanceof NotFoundError) {
+				return notFound(error.message);
+			}
+
+			throw error;
 		}
 	} catch (error) {
-		console.error("Error al actualizar item:", error);
+		logger.error('Error en handler de actualización de item:', error);
+
+		if (error instanceof DatabaseError) {
+			return serverError(error.message);
+		}
+
 		return serverError("Error al procesar la solicitud");
 	}
 };
+
+export const handler = middy(baseHandler)
+	.use(httpJsonBodyParser())
+	.use(cors())
+	.use(httpErrorHandler());
