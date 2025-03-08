@@ -1,0 +1,48 @@
+service: mi-proyecto-serverless
+
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: us-east-1
+  environment:
+    DB_HOST: ${env:DB_HOST, "localhost"}
+    DB_USER: ${env:DB_USER, "root"}
+    DB_PASSWORD: ${env:DB_PASSWORD, ""}
+    DB_NAME: ${env:DB_NAME, "mi_base_de_datos"}
+
+plugins:
+  - serverless-offline
+
+functions:
+  createItem:
+    handler: src/functions/create.handler
+    events:
+      - http:
+          path: items
+          method: post
+  getAllItems:
+    handler: src/functions/read.getAll
+    events:
+      - http:
+          path: items
+          method: get
+  getItemById:
+    handler: src/functions/read.getById
+    events:
+      - http:
+          path: items/{id}
+          method: get
+  updateItem:
+    handler: src/functions/update.handler
+    events:
+      - http:
+          path: items/{id}
+          method: put
+  deleteItem:
+    handler: src/functions/delete.handler
+    events:
+      - http:
+          path: items/{id}
+          method: delete
